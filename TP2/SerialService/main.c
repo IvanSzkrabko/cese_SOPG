@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <signal.h>
+#include <stdbool.h>
 
 #define Puerto_Serie 1
 #define Baudrate 115200
@@ -21,6 +22,8 @@
 
 static pthread_t th_TCP;
 static int newfd;
+static bool TCPok;
+static pthread_mutex_t mutexData = PTHREAD_MUTEX_INITIALIZER;
 
 //Signal
 void sigint_handler(int sig)
@@ -37,17 +40,28 @@ void *start_thread(void *aux)
 	{
 		//Leo mensajes de la EDUCIA
 		usleep(10000);
-		if ((serial_receive(bufferIn, sizeof(bufferIn))) != 0)
+		pthread_mutex_lock(&mutexData);
+		if (TCPok)
 		{
-			//printf("read: %s\r\n", bufferIn);
-			// Enviamos mensaje a server
-			if (write(newfd, bufferIn, sizeof(bufferIn)) == -1)
+			//perror("Serial Enable\n");
+			pthread_mutex_unlock(&mutexData);
+			if ((serial_receive(bufferIn, sizeof(bufferIn))) != 0)
 			{
-				perror("Error escribiendo mensaje en socket");
-				// Cerramos conexion con cliente
-				close(newfd);
-				exit(1);
+				//printf("read: %s\r\n", bufferIn);
+				// Enviamos mensaje a server
+				if (write(newfd, bufferIn, sizeof(bufferIn)) <= 0)
+				{
+					perror("Error escribiendo mensaje en socket");
+					// Cerramos conexion con cliente
+					close(newfd);
+					exit(1);
+				}
 			}
+		}
+		else
+		{
+			pthread_mutex_unlock(&mutexData);
+			//perror("Serial Blocked\n");
 		}
 	}
 }
@@ -81,8 +95,7 @@ int main(void)
 
 	//Serial---------------
 	serial_open(Puerto_Serie, Baudrate);
-	int serialstatus = 0;
-
+	
 	// Creamos socket
 	int s = socket(AF_INET, SOCK_STREAM, 0);
 	if(s==-1)
@@ -119,17 +132,34 @@ int main(void)
 
 	//Evito que las señales afecten al thread
 	sigset_t set;
-	sigemptyset(&set);
-	sigaddset(&set, SIGINT);
-	sigaddset(&set, SIGTERM);
-	pthread_sigmask(SIG_BLOCK, &set,NULL);
+
+	if (sigemptyset(&set)|sigaddset(&set, SIGTERM)|sigaddset(&set, SIGINT) != 0)
+	{
+		perror("error en sigset_t");
+		exit(1);
+	}
+	
+
+	if 	(pthread_sigmask(SIG_BLOCK, &set,NULL) != 0)
+	{
+		perror("error en pthread_sigmask");
+		exit(1);
+	}
 
 	//Creo Thread secundario
 	char *aux;
-	pthread_create(&th_TCP, NULL, start_thread, (void *)aux);
+	if (pthread_create(&th_TCP, NULL, start_thread, (void *)aux)!= 0)
+	{
+		perror("error en pthread_create");
+		exit(1);
+	}
 
 	//Activo señales en el thread ppal
-	pthread_sigmask(SIG_UNBLOCK, &set,NULL);
+	if (pthread_sigmask(SIG_UNBLOCK, &set, NULL) != 0)
+	{
+		perror("error en pthread_sigmask");
+		exit(1);
+	}
 
 	while (1)
 	{
@@ -138,28 +168,43 @@ int main(void)
 		if ((newfd = accept(s, (struct sockaddr *)&clientaddr, &addr_len)) == -1)
 		{
 			perror("error en accept");
+			close(newfd);
 			exit(1);
 		}
 
 		char ipClient[32];
 		inet_ntop(AF_INET, &(clientaddr.sin_addr), ipClient, sizeof(ipClient));
-		printf("server:  conexion desde:  %s\n", ipClient);
+		printf("Server:  conexion desde:  %s\n", ipClient);
 		
+		pthread_mutex_lock (&mutexData);
+		TCPok=true;
+		pthread_mutex_unlock (&mutexData);
+
 		while(1)
 		{
 			// Leemos mensaje de server y enviamos a la educia - BLOQUEANTE
-			if( (n = recv(newfd,buffer,128,0)) == -1 )
+			if( (n = recv(newfd,buffer,128,0)) < 0 )
 			{
 				perror("Error leyendo mensaje en socket");
-				// Cerramos conexion con cliente
+				pthread_mutex_lock (&mutexData);
+				TCPok=false;
+				pthread_mutex_unlock (&mutexData);
 				close(newfd);
-				break;
+				exit(1);
 			}
 			else if (n > 0)
 			{
 				buffer[n] = 0x00;
 				serial_send(buffer, n);
 				//printf("Recibi %d bytes.:%s\n", n, buffer);
+			}else
+			{
+				pthread_mutex_lock (&mutexData);
+				TCPok=false;
+				pthread_mutex_unlock (&mutexData);
+				close(newfd);
+				printf("Socket Cerrado\n");
+				break;	
 			}
 		}
 	}
