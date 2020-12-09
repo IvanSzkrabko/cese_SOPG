@@ -24,14 +24,11 @@ static pthread_t th_TCP;
 static int newfd;
 static bool TCPok,endProgram;
 static pthread_mutex_t mutexData = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t mutexEndprog = PTHREAD_MUTEX_INITIALIZER;
 
 //Signal
 void sigint_handler(int sig)
 {
-	pthread_mutex_lock(&mutexEndprog);
 	endProgram=true;
-	pthread_mutex_unlock(&mutexEndprog);
 }
 
 //Thread: Leo de la educia y mando al server
@@ -76,9 +73,7 @@ int main(void)
 	sa.sa_flags = 0;
 	sigemptyset(&sa.sa_mask);
 
-	pthread_mutex_lock(&mutexEndprog);
 	endProgram=false;
-	pthread_mutex_unlock(&mutexEndprog);
 
 	if (sigaction(SIGINT, &sa, NULL) == -1)
 	{
@@ -211,13 +206,10 @@ int main(void)
 				break;	
 			}
 		}
-		pthread_mutex_lock(&mutexEndprog);
 		if (endProgram)
 		{
-			pthread_mutex_unlock(&mutexEndprog);
 			break;
 		}
-		pthread_mutex_unlock(&mutexEndprog);
 	}
 	
 	printf("FinDePrograma!\n");
