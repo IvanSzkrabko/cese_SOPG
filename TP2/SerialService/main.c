@@ -22,14 +22,16 @@
 
 static pthread_t th_TCP;
 static int newfd;
-static bool TCPok;
+static bool TCPok,endProgram;
 static pthread_mutex_t mutexData = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mutexEndprog = PTHREAD_MUTEX_INITIALIZER;
 
 //Signal
 void sigint_handler(int sig)
 {
-	pthread_cancel(th_TCP);
-	exit(1);
+	pthread_mutex_lock(&mutexEndprog);
+	endProgram=true;
+	pthread_mutex_unlock(&mutexEndprog);
 }
 
 //Thread: Leo de la educia y mando al server
@@ -73,6 +75,10 @@ int main(void)
 	sa.sa_handler = sigint_handler;
 	sa.sa_flags = 0;
 	sigemptyset(&sa.sa_mask);
+
+	pthread_mutex_lock(&mutexEndprog);
+	endProgram=false;
+	pthread_mutex_unlock(&mutexEndprog);
 
 	if (sigaction(SIGINT, &sa, NULL) == -1)
 	{
@@ -163,13 +169,13 @@ int main(void)
 
 	while (1)
 	{
+
 		// Ejecutamos accept() para recibir conexiones entrantes
 		addr_len = sizeof(struct sockaddr_in);
-		if ((newfd = accept(s, (struct sockaddr *)&clientaddr, &addr_len)) == -1)
+		if (((newfd = accept(s, (struct sockaddr *)&clientaddr, &addr_len)) == -1) || endProgram)
 		{
 			perror("error en accept");
-			close(newfd);
-			exit(1);
+			break;
 		}
 
 		char ipClient[32];
@@ -183,21 +189,19 @@ int main(void)
 		while(1)
 		{
 			// Leemos mensaje de server y enviamos a la educia - BLOQUEANTE
-			if( (n = recv(newfd,buffer,128,0)) < 0 )
+			if( ((n = recv(newfd,buffer,128,0)) < 0) || endProgram)
 			{
-				perror("Error leyendo mensaje en socket");
-				pthread_mutex_lock (&mutexData);
-				TCPok=false;
-				pthread_mutex_unlock (&mutexData);
+				perror("Error leyendo mensaje en socket\n");
 				close(newfd);
-				exit(1);
+				break;
 			}
 			else if (n > 0)
 			{
 				buffer[n] = 0x00;
 				serial_send(buffer, n);
 				//printf("Recibi %d bytes.:%s\n", n, buffer);
-			}else
+			}
+			else
 			{
 				pthread_mutex_lock (&mutexData);
 				TCPok=false;
@@ -207,8 +211,22 @@ int main(void)
 				break;	
 			}
 		}
+		pthread_mutex_lock(&mutexEndprog);
+		if (endProgram)
+		{
+			pthread_mutex_unlock(&mutexEndprog);
+			break;
+		}
+		pthread_mutex_unlock(&mutexEndprog);
 	}
-
+	
+	printf("FinDePrograma!\n");
+	pthread_mutex_lock(&mutexData);
+	TCPok = false;
+	pthread_mutex_unlock(&mutexData);
+	pthread_cancel(th_TCP);
+	pthread_join(th_TCP, NULL);
+	serial_close();
 	exit(EXIT_SUCCESS);
 	return 0;
 }
